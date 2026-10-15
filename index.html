@@ -2,85 +2,101 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>3D Gaussian Splatting Viewer</title>
     <style>
         :root { color-scheme: dark; }
-        * { margin: 0; padding: 0; box-sizing: border-box; }
+        * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         html, body { height: 100%; }
         body {
             background: #000;
-            font-family: system-ui, -apple-system, sans-serif;
-            overflow: hidden;
             color: #fff;
+            font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+            overflow: hidden;
+            height: 100dvh;
+            height: 100vh; /* fallback */
         }
-        canvas { display: block; }
+        canvas { display: block; touch-action: none; }
 
         #panel {
-            position: absolute;
-            top: 12px;
-            left: 12px;
-            background: rgba(20, 20, 24, 0.78);
-            border: 1px solid rgba(255,255,255,0.12);
+            position: fixed;
+            top: max(10px, env(safe-area-inset-top));
+            left: 10px;
+            background: rgba(18, 18, 22, 0.72);
+            border: 1px solid rgba(255, 255, 255, 0.12);
             backdrop-filter: blur(8px);
-            padding: 12px 14px;
+            -webkit-backdrop-filter: blur(8px);
+            padding: 10px 12px;
             border-radius: 10px;
             font-size: 13px;
-            line-height: 1.45;
+            line-height: 1.4;
             z-index: 100;
-            max-width: 320px;
+            max-width: min(320px, calc(100vw - 20px));
             pointer-events: none;
         }
-        #panel h1 { font-size: 15px; margin-bottom: 4px; }
+        #panel h1 { font-size: 14px; margin-bottom: 3px; }
         #panel .hint { opacity: 0.62; font-size: 12px; }
         #panel .model { opacity: 0.85; font-size: 12px; margin-top: 5px; word-break: break-all; }
 
         #status {
-            position: absolute;
-            top: 50%;
-            left: 50%;
+            position: fixed;
+            top: 50%; left: 50%;
             transform: translate(-50%, -50%);
-            font-size: 16px;
+            font-size: 15px;
             text-align: center;
             z-index: 50;
             pointer-events: none;
             padding: 0 20px;
+            max-width: 90vw;
+            white-space: pre-line;
         }
         #status.error { color: #ff8a8a; }
 
         #bar {
-            position: absolute;
+            position: fixed;
             left: 50%;
-            bottom: 18px;
+            bottom: calc(max(14px, env(safe-area-inset-bottom)) + 14px);
             transform: translateX(-50%);
             display: flex;
             gap: 8px;
             z-index: 120;
+            flex-wrap: wrap;
+            justify-content: center;
+            width: calc(100vw - 20px);
+            max-width: 480px;
         }
         #bar button {
             appearance: none;
-            background: rgba(28, 28, 34, 0.85);
-            border: 1px solid rgba(255,255,255,0.18);
+            background: rgba(26, 26, 32, 0.85);
+            border: 1px solid rgba(255, 255, 255, 0.18);
             color: #eee;
-            padding: 9px 14px;
-            border-radius: 8px;
-            font-size: 13px;
+            padding: 12px 16px;
+            border-radius: 10px;
+            font-size: 14px;
             cursor: pointer;
-            transition: background .15s, border-color .15s;
+            min-height: 44px;
+            touch-action: manipulation;
             backdrop-filter: blur(8px);
+            -webkit-backdrop-filter: blur(8px);
             white-space: nowrap;
+            flex: 1 1 auto;
+            max-width: 150px;
         }
-        #bar button:hover { background: rgba(50, 50, 60, 0.95); border-color: rgba(255,255,255,0.4); }
+        #bar button:active { background: rgba(60, 60, 70, 0.95); }
+        #bar button.primary {
+            background: rgba(40, 62, 122, 0.85);
+            border-color: rgba(130, 165, 255, 0.5);
+        }
 
         #drop {
-            position: absolute;
+            position: fixed;
             inset: 0;
             z-index: 200;
             display: none;
             align-items: center;
             justify-content: center;
-            background: rgba(0,0,0,0.55);
-            font-size: 18px;
+            background: rgba(0, 0, 0, 0.55);
+            font-size: 17px;
             text-align: center;
             pointer-events: none;
         }
@@ -92,21 +108,20 @@
 <body>
     <div id="panel">
         <h1>3DGS Viewer</h1>
-        <div class="hint">Drag to orbit &nbsp;·&nbsp; Scroll to zoom &nbsp;·&nbsp; Right-drag to pan</div>
-        <div class="hint">Keys: <b>I</b> info &nbsp;<b>P</b> points &nbsp;<b>O</b> ortho &nbsp;<b>=</b>/<b>-</b> splat size</div>
+        <div class="hint">Drag / one finger to orbit &nbsp;·&nbsp; pinch to zoom &nbsp;·&nbsp; two-finger drag to pan</div>
         <div class="model" id="modelLabel">No model loaded</div>
     </div>
 
     <div id="status">Loading model…</div>
 
     <div id="bar">
-        <button id="openBtn">Open model</button>
-        <button id="flipBtn">Flip up axis</button>
-        <button id="reloadBtn">Reload</button>
+        <button id="loadModelBtn" class="primary">Load model</button>
+        <button id="openBtn">Open file</button>
+        <button id="flipBtn">Flip Y</button>
     </div>
 
     <div id="drop">Drop a .ksplat / .splat / .ply file</div>
-    <input type="file" id="fileInput" accept=".ksplat,.splat,.ply,.spz">
+    <input type="file" id="fileInput" accept=".ksplat,.splat,.ply">
 
     <script type="importmap">
     {
@@ -121,21 +136,30 @@
         import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 
         // ------------------------------------------------------------------
-        // Camera orientation.
-        //
-        // Scenes produced by graphdeco-inria/gaussian-splatting use COLMAP's
-        // coordinate system, where +Y points DOWN. So the "up" vector must be
-        // [0, -1, 0] — NOT [0, 1, 0] — or the model renders upside-down.
-        // Use the "Flip up axis" button (or ?up=1) if your scene is different.
+        // Camera orientation: COLMAP/3DGS scenes use Y-down, so up = [0,-1,0].
+        // Use the "Flip Y" button (or ?up=1) if a scene is the other way.
         // ------------------------------------------------------------------
         const params = new URLSearchParams(location.search);
         const UP = (params.get('up') === '1') ? [0, 1, 0] : [0, -1, 0];
+
+        const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                         (window.innerWidth < 768);
+
+        // ------------------------------------------------------------------
+        // The model committed to this repo, served from the SAME origin on
+        // GitHub Pages. Put your .ksplat next to index.html and commit it.
+        // (Keep it under ~100 MB — GitHub's file limit. Compression level 2
+        //  in the pipeline's KSPLAT_COMPRESSION makes the file smaller.)
+        // ------------------------------------------------------------------
+        const REPO_MODEL = 'statue.ksplat';
+        const MODEL_CANDIDATES = [REPO_MODEL, 'model.ksplat', 'model.splat', 'model.ply']
+            .filter((v, i, a) => a.indexOf(v) === i);
 
         const statusEl = document.getElementById('status');
         const modelLabelEl = document.getElementById('modelLabel');
 
         function setStatus(msg, isError = false) {
-            statusEl.textContent = msg;
+            statusEl.textContent = msg || '';
             statusEl.classList.toggle('error', isError);
             statusEl.style.display = msg ? '' : 'none';
         }
@@ -144,12 +168,13 @@
             cameraUp: UP,
             initialCameraPosition: [0, 0, 4],
             initialCameraLookAt: [0, 0, 0],
-            // Keep workers on the default (non-shared) memory path so the page
-            // works from a plain static server / file drop without requiring
-            // cross-origin isolation headers. Disable the GPU sort accordingly.
+            // Works from a plain static host (GitHub Pages) with no
+            // cross-origin-isolation headers.
             sharedMemoryForWorkers: false,
             gpuAcceleratedSort: false,
-            antialiased: false
+            antialiased: false,
+            // Big fill-rate win on high-DPI phones (render at CSS resolution).
+            ignoreDevicePixelRatio: isMobile
         });
 
         function formatFromName(name) {
@@ -160,7 +185,12 @@
             return null;
         }
 
-        let sceneLoaded = false;
+        function clearScenes() {
+            const n = (typeof viewer.getSceneCount === 'function') ? viewer.getSceneCount() : 0;
+            for (let i = n - 1; i >= 0; i--) {
+                try { viewer.removeSplatScene(i); } catch (e) { /* ignore */ }
+            }
+        }
 
         function loadModel(path, format, label) {
             setStatus('Loading ' + label + '…');
@@ -173,91 +203,72 @@
             };
             if (format) opts.format = format;
 
-            // Replace any previously loaded scene (best-effort API guard).
-            if (sceneLoaded && typeof viewer.removeSplatScene === 'function') {
-                try { viewer.removeSplatScene(0); } catch (e) { /* ignore */ }
-            }
-
             return viewer.addSplatScene(path, opts)
                 .then(() => {
-                    sceneLoaded = true;
                     modelLabelEl.textContent = label;
                     setStatus('');
                     viewer.start();
                 })
                 .catch((error) => {
-                    setStatus('Could not load model: ' + error.message, true);
                     console.error('Failed to load model:', error);
                     throw error;
                 });
         }
 
-        // ---- Model source resolution ----
-        // 1. ?model=file.ksplat   (explicit)
-        // 2. drag & drop / file picker
-        // 3. default: try model.ksplat, then model.splat, then model.ply
-        const candidates = [];
-        if (params.get('model')) candidates.push({ path: params.get('model'), format: formatFromName(params.get('model')) });
-        ['model.ksplat', 'model.splat', 'model.ply'].forEach(p =>
-            candidates.push({ path: p, format: formatFromName(p) }));
-
-        (async function boot() {
-            let lastErr = null;
-            for (const c of candidates) {
+        // Load the repo-hosted model, trying candidates in order.
+        async function loadRepoModel() {
+            clearScenes();
+            for (const c of MODEL_CANDIDATES) {
                 try {
-                    await loadModel(c.path, c.format, c.path);
+                    await loadModel(c, formatFromName(c), c);
                     return;
-                } catch (e) { lastErr = e; }
+                } catch (e) { /* try next */ }
             }
-            setStatus(
-                'No model found. Drop a .ksplat/.splat/.ply file here, click "Open model", ' +
-                'or put a "model.ksplat" next to this file.\n' +
-                'Tip: open this page over http:// (not file://) to load models by URL.',
-                true
-            );
-        })();
+            setStatus('No model found in the repo.\nPut "' + REPO_MODEL +
+                      '" next to index.html, or tap "Open file".', true);
+        }
 
-        // ---- Drag & drop + file picker ----
+        // ---- Local file (picker / drag-drop), works without a server ----
         const fileInput = document.getElementById('fileInput');
         let objectUrl = null;
 
         function handleFile(file) {
             const format = formatFromName(file.name);
-            if (!format) {
-                setStatus('Unsupported file type: ' + file.name, true);
-                return;
-            }
+            if (!format) { setStatus('Unsupported file: ' + file.name, true); return; }
             if (objectUrl) URL.revokeObjectURL(objectUrl);
             objectUrl = URL.createObjectURL(file);
+            clearScenes();
             loadModel(objectUrl, format, file.name).catch(() => {});
         }
 
+        // ---- Boot ----
+        if (params.get('model')) {
+            loadModel(params.get('model'), formatFromName(params.get('model')),
+                      params.get('model')).catch(() => {});
+        } else {
+            loadRepoModel();
+        }
+
+        // ---- Toolbar ----
+        document.getElementById('loadModelBtn').addEventListener('click', loadRepoModel);
         document.getElementById('openBtn').addEventListener('click', () => fileInput.click());
         fileInput.addEventListener('change', () => {
             if (fileInput.files[0]) handleFile(fileInput.files[0]);
             fileInput.value = '';
         });
+        document.getElementById('flipBtn').addEventListener('click', () => {
+            params.set('up', UP[1] < 0 ? '1' : '-1');
+            location.search = params.toString();
+        });
 
-        window.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            document.body.classList.add('dragging');
-        });
-        window.addEventListener('dragleave', (e) => {
-            if (e.relatedTarget === null) document.body.classList.remove('dragging');
-        });
+        // ---- Drag & drop ----
+        window.addEventListener('dragover', (e) => { e.preventDefault(); document.body.classList.add('dragging'); });
+        window.addEventListener('dragleave', (e) => { if (e.relatedTarget === null) document.body.classList.remove('dragging'); });
         window.addEventListener('drop', (e) => {
             e.preventDefault();
             document.body.classList.remove('dragging');
             if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
         });
-
-        // ---- Toolbar ----
-        document.getElementById('flipBtn').addEventListener('click', () => {
-            const up = (UP[1] < 0) ? '1' : '-1';
-            params.set('up', up);
-            location.search = params.toString();
-        });
-        document.getElementById('reloadBtn').addEventListener('click', () => location.reload());
     </script>
 </body>
 </html>
