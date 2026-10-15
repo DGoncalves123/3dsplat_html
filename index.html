@@ -5,48 +5,114 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>3D Gaussian Splatting Viewer</title>
     <style>
+        :root { color-scheme: dark; }
         * { margin: 0; padding: 0; box-sizing: border-box; }
+        html, body { height: 100%; }
         body {
-            background: #1a1a1a;
-            font-family: system-ui, sans-serif;
+            background: #000;
+            font-family: system-ui, -apple-system, sans-serif;
             overflow: hidden;
-        }
-        #info {
-            position: absolute;
-            top: 10px;
-            left: 10px;
             color: #fff;
-            background: rgba(0,0,0,0.7);
-            padding: 10px 15px;
-            border-radius: 6px;
-            font-size: 14px;
-            z-index: 100;
         }
-        #info h1 { font-size: 16px; margin-bottom: 5px; }
-        #info p { opacity: 0.7; font-size: 12px; }
-        #loading {
+        canvas { display: block; }
+
+        #panel {
+            position: absolute;
+            top: 12px;
+            left: 12px;
+            background: rgba(20, 20, 24, 0.78);
+            border: 1px solid rgba(255,255,255,0.12);
+            backdrop-filter: blur(8px);
+            padding: 12px 14px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.45;
+            z-index: 100;
+            max-width: 320px;
+            pointer-events: none;
+        }
+        #panel h1 { font-size: 15px; margin-bottom: 4px; }
+        #panel .hint { opacity: 0.62; font-size: 12px; }
+        #panel .model { opacity: 0.85; font-size: 12px; margin-top: 5px; word-break: break-all; }
+
+        #status {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            color: #fff;
-            font-size: 18px;
+            font-size: 16px;
+            text-align: center;
             z-index: 50;
+            pointer-events: none;
+            padding: 0 20px;
         }
+        #status.error { color: #ff8a8a; }
+
+        #bar {
+            position: absolute;
+            left: 50%;
+            bottom: 18px;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 8px;
+            z-index: 120;
+        }
+        #bar button {
+            appearance: none;
+            background: rgba(28, 28, 34, 0.85);
+            border: 1px solid rgba(255,255,255,0.18);
+            color: #eee;
+            padding: 9px 14px;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: background .15s, border-color .15s;
+            backdrop-filter: blur(8px);
+            white-space: nowrap;
+        }
+        #bar button:hover { background: rgba(50, 50, 60, 0.95); border-color: rgba(255,255,255,0.4); }
+
+        #drop {
+            position: absolute;
+            inset: 0;
+            z-index: 200;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0,0,0,0.55);
+            font-size: 18px;
+            text-align: center;
+            pointer-events: none;
+        }
+        body.dragging #drop { display: flex; }
+
+        input[type="file"] { display: none; }
     </style>
 </head>
 <body>
-    <div id="info">
+    <div id="panel">
         <h1>3DGS Viewer</h1>
-        <p>Drag to rotate | Scroll to zoom | Right-drag to pan</p>
+        <div class="hint">Drag to orbit &nbsp;·&nbsp; Scroll to zoom &nbsp;·&nbsp; Right-drag to pan</div>
+        <div class="hint">Keys: <b>I</b> info &nbsp;<b>P</b> points &nbsp;<b>O</b> ortho &nbsp;<b>=</b>/<b>-</b> splat size</div>
+        <div class="model" id="modelLabel">No model loaded</div>
     </div>
-    <div id="loading">Loading model...</div>
+
+    <div id="status">Loading model…</div>
+
+    <div id="bar">
+        <button id="openBtn">Open model</button>
+        <button id="flipBtn">Flip up axis</button>
+        <button id="reloadBtn">Reload</button>
+    </div>
+
+    <div id="drop">Drop a .ksplat / .splat / .ply file</div>
+    <input type="file" id="fileInput" accept=".ksplat,.splat,.ply,.spz">
 
     <script type="importmap">
     {
         "imports": {
             "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
-            "@mkkellogg/gaussian-splats-3d": "https://unpkg.com/@mkkellogg/gaussian-splats-3d@0.4.2/build/gaussian-splats-3d.module.js"
+            "@mkkellogg/gaussian-splats-3d": "https://unpkg.com/@mkkellogg/gaussian-splats-3d@0.4.7/build/gaussian-splats-3d.module.js"
         }
     }
     </script>
@@ -54,31 +120,144 @@
     <script type="module">
         import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
 
-        // Model file in same directory - supports .ply, .splat, or .ksplat
-        const MODEL_FILE = 'model.splat';
+        // ------------------------------------------------------------------
+        // Camera orientation.
+        //
+        // Scenes produced by graphdeco-inria/gaussian-splatting use COLMAP's
+        // coordinate system, where +Y points DOWN. So the "up" vector must be
+        // [0, -1, 0] — NOT [0, 1, 0] — or the model renders upside-down.
+        // Use the "Flip up axis" button (or ?up=1) if your scene is different.
+        // ------------------------------------------------------------------
+        const params = new URLSearchParams(location.search);
+        const UP = (params.get('up') === '1') ? [0, 1, 0] : [0, -1, 0];
+
+        const statusEl = document.getElementById('status');
+        const modelLabelEl = document.getElementById('modelLabel');
+
+        function setStatus(msg, isError = false) {
+            statusEl.textContent = msg;
+            statusEl.classList.toggle('error', isError);
+            statusEl.style.display = msg ? '' : 'none';
+        }
 
         const viewer = new GaussianSplats3D.Viewer({
-            cameraUp: [0, 1, 0],
-            initialCameraPosition: [0, 0, 5],
+            cameraUp: UP,
+            initialCameraPosition: [0, 0, 4],
             initialCameraLookAt: [0, 0, 0],
-            sharedMemoryForWorkers: false
+            // Keep workers on the default (non-shared) memory path so the page
+            // works from a plain static server / file drop without requiring
+            // cross-origin isolation headers. Disable the GPU sort accordingly.
+            sharedMemoryForWorkers: false,
+            gpuAcceleratedSort: false,
+            antialiased: false
         });
 
-        viewer.addSplatScene(MODEL_FILE, {
-            splatAlphaRemovalThreshold: 5,
-            showLoadingUI: true,
-            position: [0, 0, 0],
-            rotation: [0, 0, 0, 1],
-            scale: [1, 1, 1]
-        })
-        .then(() => {
-            document.getElementById('loading').style.display = 'none';
-            viewer.start();
-        })
-        .catch((error) => {
-            document.getElementById('loading').textContent = 'Error loading model: ' + error.message;
-            console.error('Failed to load model:', error);
+        function formatFromName(name) {
+            const n = name.toLowerCase();
+            if (n.endsWith('.ply'))    return GaussianSplats3D.SceneFormat.Ply;
+            if (n.endsWith('.splat'))  return GaussianSplats3D.SceneFormat.Splat;
+            if (n.endsWith('.ksplat')) return GaussianSplats3D.SceneFormat.KSplat;
+            return null;
+        }
+
+        let sceneLoaded = false;
+
+        function loadModel(path, format, label) {
+            setStatus('Loading ' + label + '…');
+            const opts = {
+                splatAlphaRemovalThreshold: 5,
+                showLoadingUI: true,
+                position: [0, 0, 0],
+                rotation: [0, 0, 0, 1],
+                scale: [1, 1, 1]
+            };
+            if (format) opts.format = format;
+
+            // Replace any previously loaded scene (best-effort API guard).
+            if (sceneLoaded && typeof viewer.removeSplatScene === 'function') {
+                try { viewer.removeSplatScene(0); } catch (e) { /* ignore */ }
+            }
+
+            return viewer.addSplatScene(path, opts)
+                .then(() => {
+                    sceneLoaded = true;
+                    modelLabelEl.textContent = label;
+                    setStatus('');
+                    viewer.start();
+                })
+                .catch((error) => {
+                    setStatus('Could not load model: ' + error.message, true);
+                    console.error('Failed to load model:', error);
+                    throw error;
+                });
+        }
+
+        // ---- Model source resolution ----
+        // 1. ?model=file.ksplat   (explicit)
+        // 2. drag & drop / file picker
+        // 3. default: try model.ksplat, then model.splat, then model.ply
+        const candidates = [];
+        if (params.get('model')) candidates.push({ path: params.get('model'), format: formatFromName(params.get('model')) });
+        ['model.ksplat', 'model.splat', 'model.ply'].forEach(p =>
+            candidates.push({ path: p, format: formatFromName(p) }));
+
+        (async function boot() {
+            let lastErr = null;
+            for (const c of candidates) {
+                try {
+                    await loadModel(c.path, c.format, c.path);
+                    return;
+                } catch (e) { lastErr = e; }
+            }
+            setStatus(
+                'No model found. Drop a .ksplat/.splat/.ply file here, click "Open model", ' +
+                'or put a "model.ksplat" next to this file.\n' +
+                'Tip: open this page over http:// (not file://) to load models by URL.',
+                true
+            );
+        })();
+
+        // ---- Drag & drop + file picker ----
+        const fileInput = document.getElementById('fileInput');
+        let objectUrl = null;
+
+        function handleFile(file) {
+            const format = formatFromName(file.name);
+            if (!format) {
+                setStatus('Unsupported file type: ' + file.name, true);
+                return;
+            }
+            if (objectUrl) URL.revokeObjectURL(objectUrl);
+            objectUrl = URL.createObjectURL(file);
+            loadModel(objectUrl, format, file.name).catch(() => {});
+        }
+
+        document.getElementById('openBtn').addEventListener('click', () => fileInput.click());
+        fileInput.addEventListener('change', () => {
+            if (fileInput.files[0]) handleFile(fileInput.files[0]);
+            fileInput.value = '';
         });
+
+        window.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            document.body.classList.add('dragging');
+        });
+        window.addEventListener('dragleave', (e) => {
+            if (e.relatedTarget === null) document.body.classList.remove('dragging');
+        });
+        window.addEventListener('drop', (e) => {
+            e.preventDefault();
+            document.body.classList.remove('dragging');
+            if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+        });
+
+        // ---- Toolbar ----
+        document.getElementById('flipBtn').addEventListener('click', () => {
+            const up = (UP[1] < 0) ? '1' : '-1';
+            params.set('up', up);
+            location.search = params.toString();
+        });
+        document.getElementById('reloadBtn').addEventListener('click', () => location.reload());
     </script>
 </body>
 </html>
